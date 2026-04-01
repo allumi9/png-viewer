@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -26,7 +28,21 @@ type ImageAttributes struct {
 func main() {
 	// fileName := getRequestedFileNameFromArgs()
 	// println(fileName)
-	readPngFile("marsh_small.png")
+	readPngFile("marsh.png")
+}
+
+func getBytesPerPixelForColorType(color_type uint8) uint8 {
+	switch color_type {
+	case 0:
+		return 1
+	case 2:
+		return 3
+	case 4:
+		return 2
+	case 6:
+		return 4
+	}
+	return 0
 }
 
 func getRequestedFileNameFromArgs() string {
@@ -121,7 +137,7 @@ func readPngFile(filename string) error {
 	}
 
 	fmt.Println(image_attr)
-	var image_data_full = []byte{}
+	var compressed_image_data = []byte{}
 
 	// Reading all other chunks
 	var found_iend_chunk = false
@@ -135,34 +151,71 @@ func readPngFile(filename string) error {
 		switch [4]byte(read_buffer_int) {
 		case IEND_EXPECTED_TYPE:
 			found_iend_chunk = true
-			handleIendChunk(file, chunk_length)
-		case PLTE_EXPECTED_TYPE:
+			// Nothing to handle
 		case IDAT_EXPECTED_TYPE:
-			handleIdatChunk(file, chunk_length, &image_data_full)
+			handleIdatChunk(file, chunk_length, &compressed_image_data)
+		default:
+			file.Seek(int64(chunk_length), 1) // Plte will be ignored here as optional for now
 		}
+
+		// Read and ignore crc
+		_, err = io.ReadFull(file, read_buffer_int)
 	}
 
-	fmt.Print(image_data_full)
+	// Decompressing
+	reader, err := zlib.NewReader(bytes.NewReader(compressed_image_data))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer reader.Close()
+
+	var pixel_size = getBytesPerPixelForColorType(image_attr.colorType)
+	var scanline_size = image_attr.width * int(pixel_size)
+	fmt.Printf("%d, %d, %d\n", pixel_size, image_attr.width, scanline_size)
+
+	var unfiltered_canvas = []byte{}
+
+	for i := 0; i < image_attr.height; i++ {
+		var filter_type = make([]byte, 1)
+		_, err = io.ReadFull(file, filter_type)
+
+		var line_bytes = make([]byte, scanline_size)
+		_, err = io.ReadFull(file, filter_type)
+
+		switch filter_type[0] {
+		case 0:
+			// Already raw bytes
+		case 1:
+			applySubFilter(line_bytes)
+		case 2:
+			applyUpFilter(line_bytes)
+		case 3:
+			applyAverageFilter(line_bytes)
+		case 4:
+			applyPaethFilter(line_bytes)
+
+		}
+	}
 
 	return nil
 }
 
-func handleIdatChunk(file *os.File, chunk_length uint32, image_data *[]byte) {
+func handleIdatChunk(file *os.File, chunk_length uint32, compressed_image_data *[]byte) {
 	var read_buffer_int = make([]byte, chunk_length)
 	_, err := io.ReadFull(file, read_buffer_int)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for i := 0; i < int(chunk_length); i++ {
-		(*image_data)[len(*image_data)] = read_buffer_int[i]
-	}
+	*compressed_image_data = append(*compressed_image_data, read_buffer_int...)
 }
 
-func handleIendChunk(file *os.File, chunk_length uint32) {
-	// Maybe finalize the image or something here
-}
 func handlePlteChunk(file *os.File, chunk_length uint32) {
 	// todo: just read it through but dont do nothing for now
 	// im not sure i need it
 }
+
+func applySubFilter(line_bytes []byte)     {}
+func applyUpFilter(line_bytes []byte)      {}
+func applyAverageFilter(line_bytes []byte) {}
+func applyPaethFilter(line_bytes []byte)   {}
