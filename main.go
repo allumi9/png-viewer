@@ -17,7 +17,7 @@ var IEND_EXPECTED_TYPE = [...]byte{73, 69, 78, 68}
 var IDAT_EXPECTED_TYPE = [...]byte{73, 68, 65, 84}
 
 // bytes per pixel, defined by color type
-const bpp = 0
+var bpp = 0
 
 type ImageAttributes struct {
 	height            int
@@ -35,7 +35,7 @@ func main() {
 	readPngFile("marsh.png")
 }
 
-func getBytesPerPixelForColorType(color_type uint8) uint8 {
+func getBytesPerPixelForColorType(color_type uint8) int {
 	switch color_type {
 	case 0:
 		return 1
@@ -123,6 +123,21 @@ func readIhdrChunk(file *os.File) (ImageAttributes, error) {
 	return *image_attr, nil
 }
 
+func handleIdatChunk(file *os.File, chunk_length uint32, compressed_image_data *[]byte) {
+	var read_buffer_int = make([]byte, chunk_length)
+	_, err := io.ReadFull(file, read_buffer_int)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	*compressed_image_data = append(*compressed_image_data, read_buffer_int...)
+}
+
+func handlePlteChunk(file *os.File, chunk_length uint32) {
+	// todo: just read it through but dont do nothing for now
+	// im not sure i need it
+}
+
 func readPngFile(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -183,10 +198,10 @@ func readPngFile(filename string) error {
 
 	for i := 0; i < image_attr.height; i++ {
 		var filter_type = make([]byte, 1)
-		_, err = io.ReadFull(file, filter_type)
+		_, err = io.ReadFull(reader, filter_type)
 
 		var current_row = make([]byte, scanline_size)
-		_, err = io.ReadFull(file, current_row)
+		_, err = io.ReadFull(reader, current_row)
 
 		// Unfiltering
 		switch filter_type[0] {
@@ -205,25 +220,10 @@ func readPngFile(filename string) error {
 			log.Fatal("Unrecognized filtering type. Not 0-4")
 		}
 
-		previous_row = destination_buffer
+		copy(previous_row, destination_buffer)
 	}
 
 	return nil
-}
-
-func handleIdatChunk(file *os.File, chunk_length uint32, compressed_image_data *[]byte) {
-	var read_buffer_int = make([]byte, chunk_length)
-	_, err := io.ReadFull(file, read_buffer_int)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	*compressed_image_data = append(*compressed_image_data, read_buffer_int...)
-}
-
-func handlePlteChunk(file *os.File, chunk_length uint32) {
-	// todo: just read it through but dont do nothing for now
-	// im not sure i need it
 }
 
 func applySubFilter(current_row []byte, unfiltered_buffer []byte) {
@@ -233,7 +233,7 @@ func applySubFilter(current_row []byte, unfiltered_buffer []byte) {
 			continue
 		}
 
-		unfiltered_buffer[index] = current_row[index] + current_row[index-bpp]
+		unfiltered_buffer[index] = current_row[index] + unfiltered_buffer[index-bpp]
 	}
 }
 
@@ -250,18 +250,18 @@ func applyAverageFilter(current_row []byte, previous_row []byte, unfiltered_buff
 			continue
 		}
 
-		unfiltered_buffer[index] = current_row[index] + byte(math.Floor(float64(previous_row[index]+current_row[index-bpp])/2))
+		unfiltered_buffer[index] = current_row[index] + byte(math.Floor(float64(previous_row[index]+unfiltered_buffer[index-bpp])/2))
 	}
 }
 
 func applyPaethFilter(current_row []byte, previous_row []byte, unfiltered_buffer []byte) {
 	for index, _ := range current_row {
 		if index < bpp {
-			unfiltered_buffer[index] = calculatePaethPredictor(0, int16(previous_row[index]), 0)
+			unfiltered_buffer[index] = current_row[index] + calculatePaethPredictor(0, int16(previous_row[index]), 0)
 			continue
 		}
 
-		unfiltered_buffer[index] = calculatePaethPredictor(int16(current_row[index-bpp]), int16(previous_row[index]), int16(previous_row[index-bpp]))
+		unfiltered_buffer[index] = current_row[index] + calculatePaethPredictor(int16(unfiltered_buffer[index-bpp]), int16(previous_row[index]), int16(previous_row[index-bpp]))
 	}
 }
 
