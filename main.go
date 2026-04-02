@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 )
 
@@ -14,6 +15,9 @@ var IHDR_EXPECTED_TYPE = [...]byte{73, 72, 68, 82}
 var PLTE_EXPECTED_TYPE = [...]byte{80, 76, 84, 69}
 var IEND_EXPECTED_TYPE = [...]byte{73, 69, 78, 68}
 var IDAT_EXPECTED_TYPE = [...]byte{73, 68, 65, 84}
+
+// bytes per pixel, defined by color type
+const bpp = 0
 
 type ImageAttributes struct {
 	height            int
@@ -169,32 +173,39 @@ func readPngFile(filename string) error {
 	}
 	defer reader.Close()
 
-	var pixel_size = getBytesPerPixelForColorType(image_attr.colorType)
-	var scanline_size = image_attr.width * int(pixel_size)
-	fmt.Printf("%d, %d, %d\n", pixel_size, image_attr.width, scanline_size)
+	bpp = getBytesPerPixelForColorType(image_attr.colorType)
+	var scanline_size = image_attr.width * int(bpp)
+	fmt.Printf("%d, %d, %d\n", bpp, image_attr.width, scanline_size)
 
-	var unfiltered_canvas = []byte{}
+	// var unfiltered_canvas = []byte{}
+	var previous_row []byte = make([]byte, scanline_size)
+	var destination_buffer = make([]byte, scanline_size)
 
 	for i := 0; i < image_attr.height; i++ {
 		var filter_type = make([]byte, 1)
 		_, err = io.ReadFull(file, filter_type)
 
-		var line_bytes = make([]byte, scanline_size)
-		_, err = io.ReadFull(file, filter_type)
+		var current_row = make([]byte, scanline_size)
+		_, err = io.ReadFull(file, current_row)
 
+		// Unfiltering
 		switch filter_type[0] {
 		case 0:
 			// Already raw bytes
+			copy(destination_buffer, current_row)
 		case 1:
-			applySubFilter(line_bytes)
+			applySubFilter(current_row, destination_buffer)
 		case 2:
-			applyUpFilter(line_bytes)
+			applyUpFilter(current_row, previous_row, destination_buffer)
 		case 3:
-			applyAverageFilter(line_bytes)
+			applyAverageFilter(current_row, previous_row, destination_buffer)
 		case 4:
-			applyPaethFilter(line_bytes)
-
+			applyPaethFilter(current_row, previous_row, destination_buffer)
+		default:
+			log.Fatal("Unrecognized filtering type. Not 0-4")
 		}
+
+		previous_row = destination_buffer
 	}
 
 	return nil
@@ -215,7 +226,56 @@ func handlePlteChunk(file *os.File, chunk_length uint32) {
 	// im not sure i need it
 }
 
-func applySubFilter(line_bytes []byte)     {}
-func applyUpFilter(line_bytes []byte)      {}
-func applyAverageFilter(line_bytes []byte) {}
-func applyPaethFilter(line_bytes []byte)   {}
+func applySubFilter(current_row []byte, unfiltered_buffer []byte) {
+	for index, _ := range current_row {
+		if index < bpp {
+			unfiltered_buffer[index] = current_row[index]
+			continue
+		}
+
+		unfiltered_buffer[index] = current_row[index] + current_row[index-bpp]
+	}
+}
+
+func applyUpFilter(current_row []byte, previous_row []byte, unfiltered_buffer []byte) {
+	for index, _ := range current_row {
+		unfiltered_buffer[index] = current_row[index] + previous_row[index]
+	}
+}
+
+func applyAverageFilter(current_row []byte, previous_row []byte, unfiltered_buffer []byte) {
+	for index, _ := range current_row {
+		if index < bpp {
+			unfiltered_buffer[index] = current_row[index] + byte(math.Floor(float64(previous_row[index]/2)))
+			continue
+		}
+
+		unfiltered_buffer[index] = current_row[index] + byte(math.Floor(float64(previous_row[index]+current_row[index-bpp])/2))
+	}
+}
+
+func applyPaethFilter(current_row []byte, previous_row []byte, unfiltered_buffer []byte) {
+	for index, _ := range current_row {
+		if index < bpp {
+			unfiltered_buffer[index] = calculatePaethPredictor(0, int16(previous_row[index]), 0)
+			continue
+		}
+
+		unfiltered_buffer[index] = calculatePaethPredictor(int16(current_row[index-bpp]), int16(previous_row[index]), int16(previous_row[index-bpp]))
+	}
+}
+
+func calculatePaethPredictor(left int16, above int16, up_left int16) byte {
+	initial_estimate := left + above - up_left
+	pa := math.Abs(float64(initial_estimate) - float64(left))
+	pb := math.Abs(float64(initial_estimate) - float64(above))
+	pc := math.Abs(float64(initial_estimate) - float64(up_left))
+
+	if pa <= pb && pa <= pc {
+		return byte(left)
+	} else if pb <= pc {
+		return byte(above)
+	} else {
+		return byte(up_left)
+	}
+}
