@@ -9,6 +9,10 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime"
+	"unsafe"
+
+	"github.com/veandco/go-sdl2/sdl"
 )
 
 var IHDR_EXPECTED_TYPE = [...]byte{73, 72, 68, 82}
@@ -30,9 +34,85 @@ type ImageAttributes struct {
 }
 
 func main() {
-	// fileName := getRequestedFileNameFromArgs()
-	// println(fileName)
-	readPngFile("marsh.png")
+	runtime.LockOSThread()
+	fileName := getRequestedFileNameFromArgs()
+	fmt.Println("started")
+	var image_attr, unfiltered_canvas, err = readPngFile(fileName)
+	if err != nil {
+		panic(err)
+	}
+
+	if err = sdl.Init(sdl.INIT_EVERYTHING); err != nil {
+		panic(err)
+	}
+	defer sdl.Quit()
+
+	window, err := sdl.CreateWindow("test", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, int32(image_attr.width), int32(image_attr.height), sdl.WINDOW_SHOWN)
+	if err != nil {
+		panic(err)
+	}
+	defer window.Destroy()
+
+	var rmask, gmask, bmask, amask uint32 = 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000
+	surface, err := sdl.CreateRGBSurfaceFrom(
+		unsafe.Pointer(&unfiltered_canvas[0]),
+		int32(image_attr.width),
+		int32(image_attr.height), getBitsPerPixel(image_attr),
+		int(image_attr.width)*bpp, rmask, gmask, bmask, amask)
+	if err != nil {
+		panic(err)
+	}
+
+	renderer, err := sdl.CreateRenderer(window, 0, 0)
+	if err != nil {
+		panic(err)
+	}
+
+	texture, err := renderer.CreateTextureFromSurface(surface)
+	if err != nil {
+		panic(err)
+	}
+	rect := sdl.Rect{X: 0, Y: 0, W: int32(image_attr.width), H: int32(image_attr.height)}
+
+	renderer.Copy(texture, nil, &rect)
+	renderer.Present()
+
+	window.UpdateSurface()
+
+	running := true
+	for running {
+		renderer.Copy(texture, nil, &rect)
+		renderer.Present()
+		for event := sdl.PollEvent(); event != nil; event = sdl.PollEvent() {
+			switch event_type := event.(type) {
+			case *sdl.QuitEvent:
+				println("Quit")
+				running = false
+			case *sdl.KeyboardEvent:
+				if event_type.Type == sdl.KEYDOWN {
+					if event_type.Keysym.Sym == sdl.K_ESCAPE {
+						running = false
+					}
+				}
+
+			}
+
+		}
+		renderer.Clear()
+
+		sdl.Delay(33)
+	}
+}
+
+func getBitsPerPixel(image_attr ImageAttributes) int {
+	switch image_attr.colorType {
+	case 2:
+		return 24
+	case 6:
+		return 32
+	}
+
+	return 0
 }
 
 func getBytesPerPixelForColorType(color_type uint8) int {
@@ -66,7 +146,6 @@ func readFileSignature(file *os.File) error {
 	if bytesRead < FILE_SIG_SIZE {
 		log.Fatal("The file signature couldn't be recognized. Size < 8")
 	}
-	fmt.Print(actualSignature)
 
 	var expectedSignature = [FILE_SIG_SIZE]byte{137, 80, 78, 71, 13, 10, 26, 10}
 	if expectedSignature != [8]byte(actualSignature) {
@@ -138,7 +217,7 @@ func handlePlteChunk(file *os.File, chunk_length uint32) {
 	// im not sure i need it
 }
 
-func readPngFile(filename string) error {
+func readPngFile(filename string) (ImageAttributes, []byte, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		log.Fatalf("Couldn't find the file %s", filename)
@@ -160,8 +239,8 @@ func readPngFile(filename string) error {
 
 	// Reading all other chunks
 	var found_iend_chunk = false
+	var read_buffer_int = make([]byte, 4)
 	for found_iend_chunk == false {
-		var read_buffer_int = make([]byte, 4)
 		_, err = io.ReadFull(file, read_buffer_int)
 		var chunk_length = binary.BigEndian.Uint32(read_buffer_int)
 
@@ -174,7 +253,7 @@ func readPngFile(filename string) error {
 		case IDAT_EXPECTED_TYPE:
 			handleIdatChunk(file, chunk_length, &compressed_image_data)
 		default:
-			file.Seek(int64(chunk_length), 1) // Plte will be ignored here as optional for now
+			file.Seek(int64(chunk_length), 1) // Plte be ignored here as optional for now
 		}
 
 		// Read and ignore crc
@@ -190,9 +269,10 @@ func readPngFile(filename string) error {
 
 	bpp = getBytesPerPixelForColorType(image_attr.colorType)
 	var scanline_size = image_attr.width * int(bpp)
-	fmt.Printf("%d, %d, %d\n", bpp, image_attr.width, scanline_size)
+	// fmt.Printf("%d, %d, %d\n", bpp, image_attr.width, scanline_size)
 
-	// var unfiltered_canvas = []byte{}
+	var unfiltered_canvas = make([]byte, scanline_size*image_attr.height)
+
 	var previous_row []byte = make([]byte, scanline_size)
 	var destination_buffer = make([]byte, scanline_size)
 
@@ -221,9 +301,11 @@ func readPngFile(filename string) error {
 		}
 
 		copy(previous_row, destination_buffer)
+
+		copy(unfiltered_canvas[i*scanline_size:], destination_buffer)
 	}
 
-	return nil
+	return image_attr, unfiltered_canvas, nil
 }
 
 func applySubFilter(current_row []byte, unfiltered_buffer []byte) {
@@ -250,7 +332,7 @@ func applyAverageFilter(current_row []byte, previous_row []byte, unfiltered_buff
 			continue
 		}
 
-		unfiltered_buffer[index] = current_row[index] + byte(math.Floor(float64(previous_row[index]+unfiltered_buffer[index-bpp])/2))
+		unfiltered_buffer[index] = current_row[index] + byte(math.Floor((float64(previous_row[index])+float64(unfiltered_buffer[index-bpp]))/2))
 	}
 }
 
