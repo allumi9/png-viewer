@@ -36,7 +36,6 @@ type ImageAttributes struct {
 func main() {
 	runtime.LockOSThread()
 	fileName := getRequestedFileNameFromArgs()
-	fmt.Println("started")
 	var image_attr, unfiltered_canvas, err = readPngFile(fileName)
 	if err != nil {
 		panic(err)
@@ -47,13 +46,16 @@ func main() {
 	}
 	defer sdl.Quit()
 
-	window, err := sdl.CreateWindow("test", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, int32(image_attr.width), int32(image_attr.height), sdl.WINDOW_SHOWN)
+	window, err := sdl.CreateWindow("PNG Viewer", sdl.WINDOWPOS_UNDEFINED, sdl.WINDOWPOS_UNDEFINED, int32(image_attr.width), int32(image_attr.height), sdl.WINDOW_SHOWN)
 	if err != nil {
 		panic(err)
 	}
 	defer window.Destroy()
 
 	var rmask, gmask, bmask, amask uint32 = 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000
+	if len(unfiltered_canvas) == 0 {
+		panic("Coudln't read from image. Unfiltered canvas is of size 0.")
+	}
 	surface, err := sdl.CreateRGBSurfaceFrom(
 		unsafe.Pointer(&unfiltered_canvas[0]),
 		int32(image_attr.width),
@@ -118,9 +120,12 @@ func getBitsPerPixel(image_attr ImageAttributes) int {
 func getBytesPerPixelForColorType(color_type uint8) int {
 	switch color_type {
 	case 0:
-		return 1
+		return 1 // grayscale
 	case 2:
-		return 3
+		return 3 // rgb
+	case 3:
+		println("Color type = 3, palette, exiting. Not supported yet.")
+		os.Exit(0)
 	case 4:
 		return 2
 	case 6:
